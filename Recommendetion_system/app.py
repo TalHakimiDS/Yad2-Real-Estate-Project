@@ -12,8 +12,9 @@ NUMERIC_COLS     = ["price", "size_sqm", "rooms", "floor", "total_floors", "pric
 CATEGORICAL_COLS = ["apartment_style", "neighborhood", "city_group", "city"]  # נשתמש רק במה שקיים בפועל
 BOOLEAN_COLS     = ["elevator", "wheelchair_access", "tornado_ac", "multi_bolt_doors", "air_conditioning", "bars"]
 EMBEDDING_COL    = "description_embedding"  # אופציונלי
-DEFAULT_CSV_NAME = "/Users/nadavcohen/Desktop/Data_Science_Project_Yad2/Data/clean_realestate.csv"
-
+DEFAULT_CSV_NAME = os.path.join("..", "Data", "clean_realestate.csv")
+app_dir = os.path.dirname(os.path.abspath(__file__))
+default_csv = os.path.normpath(os.path.join(app_dir, DEFAULT_CSV_NAME))
 st.set_page_config(page_title="🏠 Apartment Recommender", layout="wide")
 st.title("🏠 Apartment Recommender — דירות דומות, פרופיל משתמש וצ׳אט")
 
