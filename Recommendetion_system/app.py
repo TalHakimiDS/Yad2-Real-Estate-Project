@@ -10,38 +10,38 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 # ======================= Config =======================
 NUMERIC_COLS     = ["price", "size_sqm", "rooms", "floor", "total_floors", "price_per_sqm"]
-CATEGORICAL_COLS = ["apartment_style", "neighborhood", "city_group", "city"]  # נשתמש רק במה שקיים בפועל
+CATEGORICAL_COLS = ["apartment_style", "neighborhood", "city_group", "city"]
 BOOLEAN_COLS     = ["elevator", "wheelchair_access", "tornado_ac", "multi_bolt_doors", "air_conditioning", "bars"]
-EMBEDDING_COL    = "description_embedding"  # אופציונלי
+EMBEDDING_COL    = "description_embedding"  # optional
+
 APP_DIR  = Path(__file__).resolve().parent
 DATA_DIR = APP_DIR.parent / "Data"
 DATA_DIR.mkdir(exist_ok=True)
 
-candidates = [
-    DATA_DIR / "clean_realestate.csv",   # העדפה ראשונה
-    DATA_DIR / "realestate.csv",         # גיבוי
-    DATA_DIR / "sample_realestate.csv",  # דגימה קטנה לדמו
+# Preferred CSVs: clean -> raw -> sample
+_CANDIDATES = [
+    DATA_DIR / "clean_realestate.csv",
+    DATA_DIR / "realestate.csv",
+    DATA_DIR / "sample_realestate.csv",
 ]
 
-def pick_csv():
-    for p in candidates:
+def _pick_existing_csv() -> str:
+    for p in _CANDIDATES:
         if p.exists():
             return str(p)
-    return ""  # לא נמצא כלום
+    return ""  # none found
 
-# נשתמש בזה כערך ברירת מחדל בשדה הסיידבר:
-DEFAULT_RESOLVED_CSV = pick_csv()
+DEFAULT_RESOLVED_CSV = _pick_existing_csv()
 
 st.set_page_config(page_title="🏠 Apartment Recommender", layout="wide")
-st.title("🏠 Apartment Recommender — דירות דומות, פרופיל משתמש וצ׳אט")
-
+st.title("🏠 Apartment Recommender — Similar listings, user profile & chat")
 
 # ======================= Small helpers =======================
 def to_numeric_flex(x):
     if pd.isna(x): return np.nan
     if isinstance(x, (int, float, np.number)): return float(x)
     s = str(x).strip()
-    if s in {"", "NA", "NaN", "nan", "None", "לא צוין", "לא צוין מחיר", "לא ידוע"}: return np.nan
+    if s in {"", "NA", "NaN", "nan", "None", "Not specified", "No price", "Unknown"}: return np.nan
     s = re.sub(r"[^0-9.\-]", "", s)
     try:
         return float(s) if s not in {"", "-", ".", "-.", ".-"} else np.nan
@@ -49,22 +49,22 @@ def to_numeric_flex(x):
         return np.nan
 
 def make_ohe():
-    # תאימות גרסאות sklearn
+    # sklearn compatibility (sparse_output introduced in 1.2)
     try:
         return OneHotEncoder(handle_unknown="ignore", sparse_output=True)
     except TypeError:
         return OneHotEncoder(handle_unknown="ignore", sparse=True)
 
 def parse_embedding_cell(x):
-    """תומך ברשימה, מחרוזת '[...]', או CSV '0.1,0.2,...'"""
-    if x is None or (isinstance(x, float) and np.isnan(x)): 
+    """Supports list/tuple/ndarray, Python '[...]' string, or CSV '0.1,0.2,...'."""
+    if x is None or (isinstance(x, float) and np.isnan(x)):
         return None
     if isinstance(x, (list, tuple, np.ndarray)):
         arr = np.asarray(x, dtype=float)
         return arr if arr.size else None
     if isinstance(x, str):
         s = x.strip()
-        # Python literal "[...]" קודם
+        # Try Python literal list first
         try:
             v = ast.literal_eval(s)
             if isinstance(v, (list, tuple)):
@@ -72,9 +72,9 @@ def parse_embedding_cell(x):
                 return arr if arr.size else None
         except Exception:
             pass
-        # נפילה ל־CSV
+        # Fallback: CSV
         try:
-            parts = [p for p in s.replace("[","").replace("]","").split(",") if p.strip()!=""]
+            parts = [p for p in s.replace("[", "").replace("]", "").split(",") if p.strip() != ""]
             arr = np.asarray([float(p) for p in parts], dtype=float)
             return arr if arr.size else None
         except Exception:
@@ -82,8 +82,8 @@ def parse_embedding_cell(x):
     return None
 
 def build_embedding_block(df, col=EMBEDDING_COL):
-    """מחזיר CSR של אמבדינג מנורמל L2 ושמוּר בממד אחיד + dim"""
-    if col not in df.columns: 
+    """Return CSR matrix of L2-normalized embeddings with unified dimension."""
+    if col not in df.columns:
         return None, 0
     embs = df[col].apply(parse_embedding_cell)
     nonnull = embs.dropna()
@@ -108,17 +108,17 @@ def build_embedding_block(df, col=EMBEDDING_COL):
     M = M / norms
     return csr_matrix(M), dim
 
-
 # ======================= Sidebar: load + weights =======================
 with st.sidebar:
     st.header("Load data & weights")
-    # במקום value=default_csv שימי את ברירת המחדל החכמה:
-    csv_path = st.text_input("CSV path", value=DEFAULT_RESOLVED_CSV)
+
+    csv_path = st.text_input("CSV path (clean_realestate.csv / realestate.csv / sample_realestate.csv)",
+                             value=DEFAULT_RESOLVED_CSV)
 
     try:
         df = pd.read_csv(csv_path) if csv_path else None
         if df is None:
-            st.error("No CSV found. Put it under Data/clean_realestate.csv or select a file.")
+            st.error("No CSV found. Place one under Data/ (e.g., clean_realestate.csv) or provide a path above.")
             st.stop()
     except Exception as e:
         st.error(f"Can't read CSV:\n{csv_path}\n\n{e}")
@@ -138,21 +138,19 @@ with st.sidebar:
 
     st.success(f"Loaded {len(df):,} rows")
 
-    # Feature weights (luxury)
     st.subheader("Feature Weights")
-    w_num  = st.slider("Numeric weight",      0.0, 2.0, 1.0, 0.05)
-    w_cat  = st.slider("Categorical weight",  0.0, 2.0, 1.0, 0.05)
-    w_bool = st.slider("Boolean weight",      0.0, 2.0, 1.0, 0.05)
-    w_emb  = st.slider("Embedding weight",    0.0, 2.0, 1.0, 0.05)
+    w_num  = st.slider("Numeric weight",      0.0, 2.0, 1.0, step=0.05)
+    w_cat  = st.slider("Categorical weight",  0.0, 2.0, 1.0, step=0.05)
+    w_bool = st.slider("Boolean weight",      0.0, 2.0, 1.0, step=0.05)
+    w_emb  = st.slider("Embedding weight",    0.0, 2.0, 1.0, step=0.05)
 
-
-# ======================= Build item vectors (blocks) =======================
+# ======================= Vector blocks =======================
 @st.cache_resource(show_spinner=False)
 def build_blocks(df_in: pd.DataFrame, weights):
     df = df_in.copy()
     w_num, w_cat, w_bool, w_emb = weights
 
-    # price_num פעם אחת
+    # One-time numeric price
     if "price" in df.columns and "price_num" not in df.columns:
         df["price_num"] = df["price"].apply(to_numeric_flex)
 
@@ -160,7 +158,7 @@ def build_blocks(df_in: pd.DataFrame, weights):
     for b in BOOLEAN_COLS:
         if b in df.columns:
             s = df[b].astype(str).str.strip().str.lower()
-            df[b] = s.isin(["true","1","yes","y","כן","1.0","1"]).astype(float)
+            df[b] = s.isin(["true", "1", "yes", "y", "כן", "1.0", "1"]).astype(float)
 
     # Numeric
     use_num = [c for c in NUMERIC_COLS if c in df.columns]
@@ -204,7 +202,7 @@ def build_blocks(df_in: pd.DataFrame, weights):
     start = 0
     result = None
     for name, mat in [('num', X_num), ('cat', X_cat), ('bool', X_bool), ('emb', X_emb)]:
-        if mat is None: 
+        if mat is None:
             continue
         ncols = mat.shape[1]
         end = start + ncols
@@ -222,7 +220,6 @@ except Exception as e:
 
 st.info(f"X_items shape: {X_items.shape} | blocks: {list(block_slices.keys())}")
 
-
 # ======================= Similar items =======================
 def similar_items(df, X_items, item_id, top_k=12, price_range_pct=None, same_loc=False, loc_key=None):
     idx_map = pd.Series(df.index, index=df["item_id"])
@@ -238,7 +235,7 @@ def similar_items(df, X_items, item_id, top_k=12, price_range_pct=None, same_loc
     if price_range_pct and "price_num" in df.columns:
         p = df.loc[i, "price_num"]
         if pd.notna(p):
-            lo, hi = p*(1-price_range_pct), p*(1+price_range_pct)
+            lo, hi = p * (1 - price_range_pct), p * (1 + price_range_pct)
             mask = df["price_num"].between(lo, hi, inclusive="both").values
             cand = [j for j in cand if mask[j]]
 
@@ -249,27 +246,28 @@ def similar_items(df, X_items, item_id, top_k=12, price_range_pct=None, same_loc
         cand = [j for j in cand if loc_mask[j]]
 
     top = cand[:top_k]
-    show_cols = [c for c in ["price","price_num","rooms","size_sqm",loc_key,"neighborhood","apartment_style","elevator","ad_url"] if c in df.columns]
+    show_cols = [c for c in ["price", "price_num", "rooms", "size_sqm", loc_key,
+                             "neighborhood", "apartment_style", "elevator", "ad_url"]
+                 if c in df.columns]
     out = df.iloc[top][show_cols].copy()
     out.insert(0, "score", sims[top])
     return out.reset_index(drop=True)
 
-
 # ======================= User profile + MMR =======================
 def recommend_for_user(df, X_items, liked_item_ids, top_k=12, lambda_mmr=0.3, price_alpha=0.0):
-    """מתוקן לבעיית np.matrix — לא נחזיר לעולם np.matrix, רק ndarray."""
-    if not liked_item_ids: 
+    """Return diverse top-k using MMR; avoid np.matrix pitfalls."""
+    if not liked_item_ids:
         return df.head(0)
 
     idx_map = pd.Series(df.index, index=df["item_id"])
     liked_idx = [int(idx_map[i]) for i in liked_item_ids if i in idx_map]
-    if not liked_idx: 
+    if not liked_idx:
         return df.head(0)
 
     # centroid as 1xD ndarray (NOT np.matrix)
     if issparse(X_items):
         C = X_items[liked_idx].mean(axis=0)         # returns np.matrix
-        C = np.asarray(C).reshape(1, -1)            # <-- fix to ndarray
+        C = np.asarray(C).reshape(1, -1)            # fix to ndarray
     else:
         C = X_items[liked_idx].mean(axis=0, keepdims=True)
         C = np.asarray(C)
@@ -282,8 +280,8 @@ def recommend_for_user(df, X_items, liked_item_ids, top_k=12, lambda_mmr=0.3, pr
     sims[liked_idx] = -1.0  # exclude seeds
 
     # candidate pool
-    pool = np.argsort(-sims)[: max(200, top_k*5)]
-    if len(pool) == 0: 
+    pool = np.argsort(-sims)[: max(200, top_k * 5)]
+    if len(pool) == 0:
         return df.head(0)
 
     pool_vectors = X_items[pool]
@@ -303,7 +301,7 @@ def recommend_for_user(df, X_items, liked_item_ids, top_k=12, lambda_mmr=0.3, pr
     while len(selected) < min(top_k, len(pool)):
         best_cand, best_score = None, -1e9
         for pos, cand in enumerate(pool[:200]):
-            if cand in selected: 
+            if cand in selected:
                 continue
             rel = base[pos]
             div = 0.0 if not selected_pos else float(sim_pool[pos, selected_pos].max())
@@ -312,13 +310,14 @@ def recommend_for_user(df, X_items, liked_item_ids, top_k=12, lambda_mmr=0.3, pr
                 best_score, best_cand, best_pos = mmr, cand, pos
         selected.append(best_cand); selected_pos.append(best_pos)
 
-    show_cols = [c for c in ["price","price_num","rooms","size_sqm","city","city_group","neighborhood","apartment_style","elevator","ad_url"] if c in df.columns]
+    show_cols = [c for c in ["price","price_num","rooms","size_sqm","city","city_group",
+                             "neighborhood","apartment_style","elevator","ad_url"]
+                 if c in df.columns]
     out = df.iloc[selected][show_cols].copy()
     out.insert(0, "score", sims[selected])
     return out.reset_index(drop=True)
 
-
-# ======================= Chatbot =======================
+# ======================= Chat helpers =======================
 def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", str(s).strip().lower())
 
@@ -326,26 +325,29 @@ CITY_CANDIDATES = sorted({str(c).strip() for c in df.get('city', pd.Series([])).
 CITY_GROUP_CANDIDATES = sorted({str(c).strip() for c in df.get('city_group', pd.Series([])).dropna().unique()})
 
 BOOL_KEYWORDS = {
-    'מעלית': 'elevator',
-    'נגישות': 'wheelchair_access',
-    'ממ\"ד': 'mamad',
-    'ממ״ד':  'mamad',
-    'מיזוג': 'air_conditioning',
-    'סורגים': 'bars',
+    'elevator': 'elevator',
+    'accessible': 'wheelchair_access',
+    'accessibility': 'wheelchair_access',
+    'ac': 'air_conditioning',
+    'air conditioning': 'air_conditioning',
+    'bars': 'bars',
+    'tornado ac': 'tornado_ac',
+    'multi bolt': 'multi_bolt_doors',
 }
 
 def parse_user_message(msg: str) -> dict:
+    """Parse a free-text prompt (English) into preference filters."""
     prefs = {}
     text = _norm(msg)
 
-    # מספרים (כולל 8k → 8000)
+    # numbers (support "8k" -> 8000)
     nums = [float(x.replace(",", "")) for x in re.findall(r"\d[\d,]*", text)]
     for m in re.findall(r"(\d+(?:\.\d+)?)\s*k", text):
-        nums.append(float(m)*1000)
+        nums.append(float(m) * 1000)
 
     if nums:
         nums_sorted = sorted(nums)
-        if 'בין' in text or 'טווח' in text or 'עד' in text:
+        if any(w in text for w in ["between", "range", "to", "up to"]):
             prefs['price_min'] = nums_sorted[0]
             prefs['price_max'] = nums_sorted[-1]
         else:
@@ -353,33 +355,33 @@ def parse_user_message(msg: str) -> dict:
             prefs['price_min'] = 0.8 * v
             prefs['price_max'] = 1.2 * v
 
-    # חדרים
-    m_rooms = re.findall(r"(\d+(?:\.\d+)?)\s*חדר", text)
+    # rooms
+    m_rooms = re.findall(r"(\d+(?:\.\d+)?)\s*room", text)
     if m_rooms:
         rs = sorted([float(r) for r in m_rooms])
-        if 'עד' in text and len(rs) >= 2:
+        if 'to' in text and len(rs) >= 2:
             prefs['rooms_min'], prefs['rooms_max'] = rs[0], rs[-1]
-        elif 'בין' in text or 'טווח' in text:
+        elif 'between' in text or 'range' in text:
             prefs['rooms_min'], prefs['rooms_max'] = rs[0], rs[-1]
         else:
             r = rs[-1]
             prefs['rooms_min'], prefs['rooms_max'] = r - 0.5, r + 0.5
 
-    # עיר / קבוצת עיר
+    # city / city_group
     for city in CITY_CANDIDATES:
-        if city and city in msg:
+        if city and city.lower() in text:
             prefs['city'] = city
             break
     if 'city' not in prefs:
         for cg in CITY_GROUP_CANDIDATES:
-            if cg and cg in msg:
+            if cg and cg.lower() in text:
                 prefs['city_group'] = cg
                 break
 
-    # בוליאנים
+    # booleans
     flags = {}
     for kw, col in BOOL_KEYWORDS.items():
-        if kw in msg:
+        if kw in text:
             flags[col] = True
     if flags:
         prefs['bools'] = flags
@@ -389,7 +391,7 @@ def parse_user_message(msg: str) -> dict:
 def apply_prefs(df_in: pd.DataFrame, prefs: dict) -> pd.DataFrame:
     dfc = df_in.copy()
 
-    # מחיר
+    # price
     if 'price_num' not in dfc.columns and 'price' in dfc.columns:
         dfc['price_num'] = dfc['price'].apply(to_numeric_flex)
     if 'price_min' in prefs:
@@ -397,23 +399,23 @@ def apply_prefs(df_in: pd.DataFrame, prefs: dict) -> pd.DataFrame:
     if 'price_max' in prefs:
         dfc = dfc[dfc['price_num'] <= prefs['price_max']]
 
-    # חדרים
+    # rooms
     if 'rooms_min' in prefs:
         dfc = dfc[dfc['rooms'] >= prefs['rooms_min']]
     if 'rooms_max' in prefs:
         dfc = dfc[dfc['rooms'] <= prefs['rooms_max']]
 
-    # עיר / קבוצת עיר
+    # location
     if 'city' in prefs and 'city' in dfc.columns:
-        dfc = dfc[dfc['city'].astype(str) == prefs['city']]
+        dfc = dfc[dfc['city'].astype(str).str.lower() == prefs['city'].lower()]
     elif 'city_group' in prefs and 'city_group' in dfc.columns:
-        dfc = dfc[dfc['city_group'].astype(str) == prefs['city_group']]
+        dfc = dfc[dfc['city_group'].astype(str).str.lower() == prefs['city_group'].lower()]
 
-    # בוליאנים
+    # booleans
     for col in prefs.get('bools', {}):
         if col in dfc.columns:
             s = dfc[col].astype(str).str.strip().str.lower()
-            mask = s.isin(["true","1","yes","y","כן","1.0","1"])
+            mask = s.isin(["true", "1", "yes", "y", "כן", "1.0", "1"])
             dfc = dfc[mask]
 
     return dfc
@@ -425,7 +427,7 @@ def rank_candidates_by_similarity(df_cand: pd.DataFrame, X_all, top_k=20):
     Xi = X_all[idx]
     if Xi.shape[0] >= 2:
         C = Xi.mean(axis=0)               # np.matrix for sparse
-        C = np.asarray(C).reshape(1, -1)  # <-- fix
+        C = np.asarray(C).reshape(1, -1)  # ensure ndarray
         C = C / (np.linalg.norm(C) + 1e-12)
         sims = cosine_similarity(C, Xi).ravel()
         order = np.argsort(-sims)
@@ -433,22 +435,21 @@ def rank_candidates_by_similarity(df_cand: pd.DataFrame, X_all, top_k=20):
     else:
         return df_cand.head(top_k)
 
-
 # ======================= UI Tabs =======================
 tab1, tab2, tab3 = st.tabs(["🔎 Similar to one", "👤 User profile (MMR)", "💬 Chatbot"])
 
 with tab1:
     st.subheader("🔎 Similar to one listing")
-    qid = st.selectbox("בחרי item_id:", df["item_id"].tolist())
+    qid = st.selectbox("Choose item_id:", df["item_id"].tolist())
     col1, col2, col3 = st.columns(3)
     with col1:
-        loc_key = st.selectbox("מפתח מיקום", [c for c in ["city","city_group"] if c in df.columns])
+        loc_key = st.selectbox("Location key", [c for c in ["city", "city_group"] if c in df.columns])
     with col2:
-        same_loc = st.checkbox(f"אותו {loc_key}", value=True)
+        same_loc = st.checkbox(f"Constrain to same {loc_key}", value=True)
     with col3:
-        pr_pct = st.slider("טווח מחיר ±%", 0, 50, 20, step=5)
+        pr_pct = st.slider("Price range ±%", 0, 50, 20, step=5)
 
-    if st.button("חפשי דומות"):
+    if st.button("Find similar"):
         try:
             res = similar_items(
                 df, X_items, qid,
@@ -457,9 +458,9 @@ with tab1:
                 same_loc=same_loc, loc_key=loc_key
             )
             if len(res) == 0:
-                st.warning("אין תוצאות — הרחיבי טווחים או בטלי פילטרים.")
+                st.warning("No results — widen your ranges or disable filters.")
             if "ad_url" in res.columns:
-                res["ad_url"] = res["ad_url"].apply(lambda x: f"<a href='{x}' target='_blank'>קישור</a>" if pd.notna(x) else "")
+                res["ad_url"] = res["ad_url"].apply(lambda x: f"<a href='{x}' target='_blank'>link</a>" if pd.notna(x) else "")
                 st.write(res.to_html(escape=False, index=False), unsafe_allow_html=True)
             else:
                 st.dataframe(res, use_container_width=True)
@@ -469,20 +470,20 @@ with tab1:
 with tab2:
     st.subheader("👤 User profile with diversity (MMR)")
     options = df["item_id"].tolist()
-    liked = st.multiselect("בחרי 1–5 מודעות שאהבת:", options, max_selections=5)
+    liked = st.multiselect("Choose 1–5 liked listings:", options, max_selections=5)
     col1, col2 = st.columns(2)
     with col1:
         lambda_mmr = st.slider("Diversify (MMR λ)", 0.0, 1.0, 0.3, step=0.05)
     with col2:
-        price_alpha = st.slider("עקיבות מחיר (α)", 0.0, 1.0, 0.0, step=0.05)
+        price_alpha = st.slider("Price adherence (α)", 0.0, 1.0, 0.0, step=0.05)
 
-    if st.button("המליצי לי"):
+    if st.button("Recommend"):
         try:
             res = recommend_for_user(df, X_items, liked, top_k=12, lambda_mmr=lambda_mmr, price_alpha=price_alpha)
             if len(res) == 0:
-                st.warning("אין תוצאות — נסי seed אחר או הורידי λ/α.")
+                st.warning("No results — try different seeds or lower λ/α.")
             if "ad_url" in res.columns:
-                res["ad_url"] = res["ad_url"].apply(lambda x: f"<a href='{x}' target='_blank'>קישור</a>" if pd.notna(x) else "")
+                res["ad_url"] = res["ad_url"].apply(lambda x: f"<a href='{x}' target='_blank'>link</a>" if pd.notna(x) else "")
                 st.write(res.to_html(escape=False, index=False), unsafe_allow_html=True)
             else:
                 st.dataframe(res, use_container_width=True)
@@ -490,20 +491,20 @@ with tab2:
             st.error(f"User-profile error: {e}")
 
 with tab3:
-    st.subheader("💬 צ׳אט — תארי מה את מחפשת")
+    st.subheader("💬 Chat — describe what you want")
     # Session state
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
     if "chat_prefs" not in st.session_state:
         st.session_state.chat_prefs = {}
 
-    c1, c2 = st.columns([1,1])
+    c1, c2 = st.columns([1, 1])
     with c1:
-        if st.button("🧹 אפס העדפות"):
+        if st.button("🧹 Reset preferences"):
             st.session_state.chat_prefs = {}
-            st.session_state.chat_history.append(("assistant", "איפסתי העדפות. מה את מחפשת?"))
+            st.session_state.chat_history.append(("assistant", "Preferences reset. What are you looking for?"))
     with c2:
-        if st.button("🗑️ נקה היסטוריה"):
+        if st.button("🗑️ Clear history"):
             st.session_state.chat_history = []
 
     # show history
@@ -511,7 +512,7 @@ with tab3:
         with st.chat_message(role):
             st.write(content)
 
-    prompt = st.chat_input("למשל: 'תקציב עד 7,500 בתל אביב, 3 חדרים, עם מעלית וממ״ד'")
+    prompt = st.chat_input("E.g., 'Budget up to 7,500 in Tel Aviv, 3 rooms, elevator'")
     if prompt:
         st.session_state.chat_history.append(("user", prompt))
         with st.chat_message("user"):
@@ -525,25 +526,29 @@ with tab3:
         df_ranked = rank_candidates_by_similarity(df_cand, X_items, top_k=20)
 
         summary = [
-            "הבנתי את ההעדפות שלך:",
-            f"- טווח מחיר: {int(st.session_state.chat_prefs.get('price_min', 0))}–{int(st.session_state.chat_prefs.get('price_max', 0))} ₪" if ('price_min' in st.session_state.chat_prefs or 'price_max' in st.session_state.chat_prefs) else "- טווח מחיר: (לא צוין)",
-            f"- חדרים: {st.session_state.chat_prefs.get('rooms_min','?')}–{st.session_state.chat_prefs.get('rooms_max','?')}" if ('rooms_min' in st.session_state.chat_prefs or 'rooms_max' in st.session_state.chat_prefs) else "- חדרים: (לא צוין)",
+            "Got your preferences:",
+            f"- Price range: {int(st.session_state.chat_prefs.get('price_min', 0))}–{int(st.session_state.chat_prefs.get('price_max', 0))} ₪"
+            if ('price_min' in st.session_state.chat_prefs or 'price_max' in st.session_state.chat_prefs) else "- Price range: (not specified)",
+            f"- Rooms: {st.session_state.chat_prefs.get('rooms_min','?')}–{st.session_state.chat_prefs.get('rooms_max','?')}"
+            if ('rooms_min' in st.session_state.chat_prefs or 'rooms_max' in st.session_state.chat_prefs) else "- Rooms: (not specified)",
         ]
         if 'city' in st.session_state.chat_prefs:
-            summary.append(f"- עיר: {st.session_state.chat_prefs['city']}")
+            summary.append(f"- City: {st.session_state.chat_prefs['city']}")
         if 'city_group' in st.session_state.chat_prefs:
-            summary.append(f"- קבוצת עיר: {st.session_state.chat_prefs['city_group']}")
+            summary.append(f"- City group: {st.session_state.chat_prefs['city_group']}")
         if st.session_state.chat_prefs.get('bools'):
-            summary.append("- מאפיינים: " + ", ".join([k for k,v in st.session_state.chat_prefs['bools'].items() if v]))
+            summary.append("- Features: " + ", ".join([k for k,v in st.session_state.chat_prefs['bools'].items() if v]))
 
-        reply = "\n".join(summary) + f"\n\nמצאתי {n_found} דירות תואמות (מציג עד 20 מדורגות)."
+        reply = "\n".join(summary) + f"\n\nFound {n_found} matching listings (showing up to 20)."
 
         with st.chat_message("assistant"):
             st.write(reply)
-            show_cols = [c for c in ["price","price_num","rooms","size_sqm","city","city_group","neighborhood","apartment_style","elevator","ad_url"] if c in df_ranked.columns]
+            show_cols = [c for c in ["price","price_num","rooms","size_sqm","city","city_group",
+                                     "neighborhood","apartment_style","elevator","ad_url"]
+                         if c in df_ranked.columns]
             res = df_ranked[show_cols].copy().reset_index(drop=True)
             if "ad_url" in res.columns:
-                res["ad_url"] = res["ad_url"].apply(lambda x: f"<a href='{x}' target='_blank'>קישור</a>" if pd.notna(x) else "")
+                res["ad_url"] = res["ad_url"].apply(lambda x: f"<a href='{x}' target='_blank'>link</a>" if pd.notna(x) else "")
                 st.write(res.to_html(escape=False, index=False), unsafe_allow_html=True)
             else:
                 st.dataframe(res, use_container_width=True)
