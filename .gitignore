@@ -48,6 +48,9 @@ Thumbs.db
 *.json
 *.pkl
 *.h5
+Data/*.csv
+!Data/sample_realestate.csv
+
 
 # Node.js (if any)
 node_modules/

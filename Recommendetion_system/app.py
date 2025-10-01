@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+from pathlib import Path
 from scipy.sparse import csr_matrix, hstack, issparse
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.metrics.pairwise import cosine_similarity
@@ -12,9 +13,25 @@ NUMERIC_COLS     = ["price", "size_sqm", "rooms", "floor", "total_floors", "pric
 CATEGORICAL_COLS = ["apartment_style", "neighborhood", "city_group", "city"]  # נשתמש רק במה שקיים בפועל
 BOOLEAN_COLS     = ["elevator", "wheelchair_access", "tornado_ac", "multi_bolt_doors", "air_conditioning", "bars"]
 EMBEDDING_COL    = "description_embedding"  # אופציונלי
-DEFAULT_CSV_NAME = os.path.join("..", "Data", "clean_realestate.csv")
-app_dir = os.path.dirname(os.path.abspath(__file__))
-default_csv = os.path.normpath(os.path.join(app_dir, DEFAULT_CSV_NAME))
+APP_DIR  = Path(__file__).resolve().parent
+DATA_DIR = APP_DIR.parent / "Data"
+DATA_DIR.mkdir(exist_ok=True)
+
+candidates = [
+    DATA_DIR / "clean_realestate.csv",   # העדפה ראשונה
+    DATA_DIR / "realestate.csv",         # גיבוי
+    DATA_DIR / "sample_realestate.csv",  # דגימה קטנה לדמו
+]
+
+def pick_csv():
+    for p in candidates:
+        if p.exists():
+            return str(p)
+    return ""  # לא נמצא כלום
+
+# נשתמש בזה כערך ברירת מחדל בשדה הסיידבר:
+DEFAULT_RESOLVED_CSV = pick_csv()
+
 st.set_page_config(page_title="🏠 Apartment Recommender", layout="wide")
 st.title("🏠 Apartment Recommender — דירות דומות, פרופיל משתמש וצ׳אט")
 
@@ -95,12 +112,14 @@ def build_embedding_block(df, col=EMBEDDING_COL):
 # ======================= Sidebar: load + weights =======================
 with st.sidebar:
     st.header("Load data & weights")
-    app_dir = os.path.dirname(os.path.abspath(__file__))
-    default_csv = os.path.join(app_dir, DEFAULT_CSV_NAME)
-    csv_path = st.text_input("CSV path", value=default_csv)
+    # במקום value=default_csv שימי את ברירת המחדל החכמה:
+    csv_path = st.text_input("CSV path", value=DEFAULT_RESOLVED_CSV)
 
     try:
-        df = pd.read_csv(csv_path)
+        df = pd.read_csv(csv_path) if csv_path else None
+        if df is None:
+            st.error("No CSV found. Put it under Data/clean_realestate.csv or select a file.")
+            st.stop()
     except Exception as e:
         st.error(f"Can't read CSV:\n{csv_path}\n\n{e}")
         st.stop()
