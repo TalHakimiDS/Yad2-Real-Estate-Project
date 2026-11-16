@@ -27,3 +27,11 @@ A sample of the data is in `Data/sample_realestate.csv`. The scraper reads its s
 ## Tech
 
 Python · Selenium · BeautifulSoup · MongoDB · pandas · scikit-learn · SHAP · Streamlit
+
+## Data and responsible use
+
+The sample listing data includes addresses and links to third-party advertisements. Use only data you are authorized to process, respect the source terms, and review personal information before redistributing any dataset or publishing a demo. Repository access does not grant rights to third-party listing data. Keep database credentials out of source control.
+
+## Research status
+
+This is an academic data-science project, not a production housing or valuation service. Notebook outputs document the experiments; the setup instructions are a starting point rather than a claim of a freshly reproduced end-to-end benchmark.
